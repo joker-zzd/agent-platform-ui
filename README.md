@@ -55,3 +55,20 @@ src/
 ├─ utils/        Axios 客户端与通用工具
 └─ views/        路由页面
 ```
+
+## REST 请求
+
+业务接口统一通过 `src/utils/rest.ts` 发起请求：
+
+```ts
+import { rest } from '@/utils/rest'
+
+interface ModelConfig {
+  id: string
+  name: string
+}
+
+const models = await rest.get<ModelConfig[]>('/v1/models')
+const model = await rest.post<ModelConfig, ModelConfig>('/v1/models', formData)
+await rest.delete<void>(`/v1/models/${modelId}`)
+```

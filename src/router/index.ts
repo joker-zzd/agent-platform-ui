@@ -12,7 +12,7 @@ const router = createRouter({
           name: 'home',
           component: () => import('@/views/HomeView.vue'),
           meta: {
-            title: '首页',
+            title: 'Agent 调试',
           },
         },
       ],

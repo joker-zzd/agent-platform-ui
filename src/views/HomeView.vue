@@ -1,930 +1,683 @@
 <script setup lang="ts">
-import axios from 'axios'
-import { computed, nextTick, ref } from 'vue'
+import { computed, ref } from 'vue'
 
-import { runAgent } from '@/api/agent'
-
-interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  meta?: string
+interface RecentTask {
+  id: number
+  type: 'document' | 'image' | 'table'
+  title: string
+  time: string
+  status: '已完成' | '处理中'
 }
 
-const agents = [
-  { id: 'general-agent', name: '通用助手', prompt: 'general-system-prompt', model: 'default-model' },
-  { id: 'code-agent', name: '编程助手', prompt: 'code-system-prompt', model: 'default-model' },
-]
+interface Attachment {
+  name: string
+  kind: 'file' | 'image'
+}
 
-const selectedAgentId = ref('general-agent')
-const input = ref('')
-const isSubmitting = ref(false)
-const requestError = ref('')
-const executionId = ref('9bb60474…6173')
-const duration = ref(842)
-const copiedMessageId = ref('')
-const sessionId = crypto.randomUUID()
-const messageList = ref<HTMLElement>()
+const taskInput = ref('')
+const notice = ref('')
+const isStarting = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
+const textarea = ref<HTMLTextAreaElement | null>(null)
+const attachments = ref<Attachment[]>([])
 
-const messages = ref<ChatMessage[]>([
-  {
-    id: 'welcome',
-    role: 'assistant',
-    content:
-      '你好，我是通用助手。当前工作台用于验证 Agent Runtime、模型路由与 Prompt 配置。你可以从下方示例开始，或直接发送一条测试消息。',
-    meta: 'default-model · 842 ms',
-  },
+const recentTasks = ref<RecentTask[]>([
+  { id: 1, type: 'document', title: '合同内容整理', status: '已完成', time: '12 分钟前' },
+  { id: 2, type: 'image', title: '产品图片分析', status: '已完成', time: '昨天' },
+  { id: 3, type: 'table', title: '订单数据汇总', status: '已完成', time: '周一' },
 ])
 
-const selectedAgent = computed(
-  () => agents.find((agent) => agent.id === selectedAgentId.value) ?? agents[0]!,
-)
+const canStart = computed(() => taskInput.value.trim().length > 0 || attachments.value.length > 0)
 
-function applySuggestion(value: string) {
-  input.value = value
-}
-
-async function copyMessage(message: ChatMessage) {
-  await navigator.clipboard.writeText(message.content)
-  copiedMessageId.value = message.id
-  window.setTimeout(() => {
-    if (copiedMessageId.value === message.id) copiedMessageId.value = ''
-  }, 1600)
-}
-
-async function scrollToLatest() {
-  await nextTick()
-  messageList.value?.scrollTo({ top: messageList.value.scrollHeight, behavior: 'smooth' })
-}
-
-async function submitMessage() {
-  const content = input.value.trim()
-  if (!content || isSubmitting.value) return
-
-  requestError.value = ''
+function selectFiles(event: Event) {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  attachments.value.push(
+    ...files.map((file) => ({
+      name: file.name,
+      kind: file.type.startsWith('image/') ? ('image' as const) : ('file' as const),
+    })),
+  )
   input.value = ''
-  messages.value.push({ id: crypto.randomUUID(), role: 'user', content })
-  await scrollToLatest()
+  notice.value = files.length ? `已添加 ${files.length} 个文件` : ''
+}
 
-  const startedAt = performance.now()
-  isSubmitting.value = true
+function removeAttachment(index: number) {
+  attachments.value.splice(index, 1)
+}
 
-  try {
-    const result = await runAgent(selectedAgentId.value, {
-      sessionId,
-      userId: 'developer',
-      message: content,
-      variables: {},
+function startVoiceInput() {
+  notice.value = '语音输入功能即将开放，你可以先输入文字。'
+  textarea.value?.focus()
+}
+
+function startTask() {
+  if (!canStart.value || isStarting.value) return
+
+  isStarting.value = true
+  notice.value = '正在创建任务…'
+  const title = taskInput.value.trim() || attachments.value[0]?.name || '新任务'
+
+  window.setTimeout(() => {
+    recentTasks.value.unshift({
+      id: Date.now(),
+      type: attachments.value.some((item) => item.kind === 'image') ? 'image' : 'document',
+      title: title.length > 20 ? `${title.slice(0, 20)}…` : title,
+      status: '处理中',
+      time: '刚刚',
     })
-
-    duration.value = Math.round(performance.now() - startedAt)
-    executionId.value = result.executionId
-    messages.value.push({
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content: result.content,
-      meta: `${result.modelId} · ${duration.value.toLocaleString()} ms`,
-    })
-  } catch (error) {
-    if (axios.isAxiosError(error)) {
-      requestError.value =
-        error.response?.data?.message ?? '无法连接 Runtime。请确认后端已在 localhost:8090 启动。'
-    } else {
-      requestError.value = '请求没有完成，请稍后重试。'
-    }
-  } finally {
-    isSubmitting.value = false
-    await scrollToLatest()
-  }
+    taskInput.value = ''
+    attachments.value = []
+    isStarting.value = false
+    notice.value = '任务已创建，可在右侧查看进度。'
+  }, 650)
 }
 </script>
 
 <template>
-  <section class="workbench">
-    <header class="page-toolbar">
-      <div>
-        <div class="breadcrumb"><span>工作空间</span><b>/</b> 调试工作台</div>
-        <h1>Agent 调试</h1>
-      </div>
-      <div class="toolbar-actions">
-        <span class="mode-note"><i></i> 单轮模式</span>
-        <a
-          class="secondary-button"
-          href="http://localhost:8090/swagger-ui.html"
-          target="_blank"
-          rel="noreferrer"
-        >查看接口文档 ↗</a>
-      </div>
-    </header>
-
-    <div class="runtime-bar">
-      <div class="agent-selector">
-        <label for="agent-select">运行 Agent</label>
-        <select id="agent-select" v-model="selectedAgentId">
-          <option v-for="agent in agents" :key="agent.id" :value="agent.id">
-            {{ agent.name }} · {{ agent.id }}
-          </option>
-        </select>
-      </div>
-      <div class="runtime-fact"><span>模型</span>{{ selectedAgent.model }}</div>
-      <div class="runtime-fact"><span>Prompt</span>{{ selectedAgent.prompt }}</div>
-      <div class="runtime-fact session-fact"><span>Session</span>{{ sessionId.slice(0, 13) }}…</div>
-      <button class="more-button" type="button" aria-label="更多运行设置" title="高级配置尚未开放" disabled>•••</button>
+  <section class="home-page">
+    <div class="botanical botanical-left" aria-hidden="true">
+      <i v-for="index in 5" :key="index"></i>
+    </div>
+    <div class="botanical botanical-right" aria-hidden="true">
+      <i v-for="index in 6" :key="index"></i>
     </div>
 
-    <div class="workspace-grid">
-      <article class="conversation-panel">
-        <div ref="messageList" class="message-list" aria-live="polite">
-          <div class="conversation-intro">
-            <span class="agent-emblem">A</span>
-            <div>
-              <h2>{{ selectedAgent.name }}</h2>
-              <p>测试 Runtime 的基础响应。当前消息不会形成多轮上下文。</p>
-            </div>
-          </div>
+    <div class="home-container">
+      <header class="hero-copy">
+        <p class="handwritten" aria-hidden="true">让复杂的事情<br />变简单</p>
+        <h1>你好，今天想完成什么？</h1>
+        <p>可以提问，也可以添加图片、文档或其他文件。</p>
+      </header>
 
-          <div
-            v-for="message in messages"
-            :key="message.id"
-            class="message-row"
-            :class="`message-${message.role}`"
-          >
-            <div class="message-author">{{ message.role === 'assistant' ? 'A' : '你' }}</div>
-            <div class="message-body">
-              <div class="message-label">
-                {{ message.role === 'assistant' ? selectedAgent.name : '开发者' }}
-                <span v-if="message.meta">{{ message.meta }}</span>
+      <div class="workspace-grid">
+        <div class="task-area">
+          <form class="task-composer" @submit.prevent="startTask">
+            <textarea
+              ref="textarea"
+              v-model="taskInput"
+              rows="5"
+              maxlength="2000"
+              aria-label="描述你想完成的事情"
+              placeholder="描述你想完成的事情…"
+              @input="notice = ''"
+            ></textarea>
+
+            <div v-if="attachments.length" class="attachment-list" aria-label="已添加的文件">
+              <span v-for="(item, index) in attachments" :key="`${item.name}-${index}`">
+                <svg v-if="item.kind === 'image'" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="3" y="4" width="18" height="16" rx="2" />
+                  <circle cx="8.5" cy="9" r="1.5" />
+                  <path d="m4 17 4.5-4.5 3.5 3 2.4-2.4L20 18" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 3h8l4 4v14H6Z" /><path d="M14 3v5h5" />
+                </svg>
+                <b>{{ item.name }}</b>
+                <button type="button" :aria-label="`移除 ${item.name}`" @click="removeAttachment(index)">×</button>
+              </span>
+            </div>
+
+            <div class="composer-actions">
+              <div class="input-actions">
+                <button type="button" @click="fileInput?.click()">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m20.5 11.5-8.9 8.9a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 1 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.6-8.6" />
+                  </svg>
+                  添加文件
+                </button>
+                <button type="button" @click="startVoiceInput">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="9" y="3" width="6" height="11" rx="3" />
+                    <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7" />
+                  </svg>
+                  语音输入
+                </button>
               </div>
-              <p>{{ message.content }}</p>
-              <button
-                v-if="message.role === 'assistant'"
-                class="copy-action"
-                type="button"
-                aria-label="复制回复"
-                @click="copyMessage(message)"
-              >
-                {{ copiedMessageId === message.id ? '已复制' : '复制' }}
+
+              <button class="start-button" type="submit" :disabled="!canStart || isStarting">
+                <svg v-if="!isStarting" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 10 7-10 7Z" /></svg>
+                <span v-else class="loading-mark" aria-hidden="true"></span>
+                {{ isStarting ? '创建中' : '开始' }}
               </button>
             </div>
-          </div>
 
-          <div v-if="isSubmitting" class="message-row message-assistant">
-            <div class="message-author">A</div>
-            <div class="message-body pending-message">
-              <div class="message-label">{{ selectedAgent.name }}</div>
-              <span></span><span></span><span></span>
-            </div>
-          </div>
-        </div>
-
-        <div class="composer-area">
-          <div v-if="requestError" class="request-error" role="alert">
-            <strong>运行失败</strong>
-            <span>{{ requestError }}</span>
-            <button type="button" @click="requestError = ''">关闭</button>
-          </div>
-          <div class="suggestions">
-            <button type="button" @click="applySuggestion('介绍一下当前 Agent Runtime 的工作流程')">
-              解释 Runtime 流程
-            </button>
-            <button type="button" @click="applySuggestion('给出一个 Spring AI 工具调用示例')">
-              测试技术问答
-            </button>
-          </div>
-          <form class="composer" @submit.prevent="submitMessage">
-            <textarea
-              v-model="input"
-              rows="3"
-              placeholder="输入一条消息测试 Agent…"
-              aria-label="发送给 Agent 的消息"
-              @keydown.ctrl.enter.prevent="submitMessage"
-            ></textarea>
-            <div class="composer-footer">
-              <span>Ctrl + Enter 发送</span>
-              <div>
-                <button class="attachment-button" type="button" disabled title="附件功能尚未开放">
-                  ＋
-                </button>
-                <button class="send-button" type="submit" :disabled="!input.trim() || isSubmitting">
-                  {{ isSubmitting ? '运行中' : '运行 Agent' }}
-                  <span>↵</span>
-                </button>
-              </div>
-            </div>
+            <input ref="fileInput" class="visually-hidden" type="file" multiple @change="selectFiles" />
           </form>
-          <p class="composer-note">响应由配置的模型生成，请验证关键内容。</p>
+          <p v-if="notice" class="notice" role="status">{{ notice }}</p>
         </div>
-      </article>
 
-      <aside class="inspector-panel" aria-label="本次执行信息">
-        <div class="inspector-heading">
-          <div>
-            <h2>执行检查器</h2>
-            <p>最近一次运行</p>
+        <aside id="recent-tasks" class="recent-panel" aria-labelledby="recent-title">
+          <div class="panel-heading">
+            <div>
+              <h2 id="recent-title">最近任务</h2>
+              <p>继续查看或处理之前的任务</p>
+            </div>
+            <button type="button" aria-label="查看全部任务">全部 <span aria-hidden="true">›</span></button>
           </div>
-          <span class="success-state">成功</span>
-        </div>
 
-        <dl class="execution-meta">
-          <div><dt>执行 ID</dt><dd>{{ executionId }}</dd></div>
-          <div><dt>耗时</dt><dd>{{ duration.toLocaleString() }} ms</dd></div>
-          <div><dt>模式</dt><dd>同步</dd></div>
-          <div><dt>用户</dt><dd>developer</dd></div>
-        </dl>
-
-        <div class="trace-section">
-          <div class="section-title">
-            <h3>执行链路</h3>
-            <span>3 步</span>
+          <div class="task-list">
+            <button v-for="task in recentTasks.slice(0, 4)" :key="task.id" type="button" class="task-row">
+              <span class="task-kind">
+                <svg v-if="task.type === 'document'" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M6 3h8l4 4v14H6Z" /><path d="M14 3v5h5M9 12h6M9 16h6" />
+                </svg>
+                <svg v-else-if="task.type === 'image'" viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m4 17 4.5-4.5 3.5 3 2.4-2.4L20 18" />
+                </svg>
+                <svg v-else viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M3 15h18M9 3v18M15 3v18" />
+                </svg>
+              </span>
+              <span class="task-copy">
+                <strong>{{ task.title }}</strong>
+                <small><i :class="{ processing: task.status === '处理中' }"></i>{{ task.status }} · {{ task.time }}</small>
+              </span>
+              <svg class="row-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
+            </button>
           </div>
-          <ol class="trace-list">
-            <li class="completed">
-              <span class="trace-node">1</span>
-              <div><strong>加载 Agent 定义</strong><small>general-agent</small></div>
-              <time>12 ms</time>
-            </li>
-            <li class="completed">
-              <span class="trace-node">2</span>
-              <div><strong>组装 Prompt</strong><small>version 1</small></div>
-              <time>4 ms</time>
-            </li>
-            <li class="completed">
-              <span class="trace-node">3</span>
-              <div><strong>调用模型</strong><small>default-model</small></div>
-              <time>826 ms</time>
-            </li>
-          </ol>
-        </div>
-
-        <div class="payload-section">
-          <div class="section-title"><h3>请求变量</h3><span>JSON</span></div>
-          <pre>{}</pre>
-        </div>
-
-        <div class="limitation-note">
-          <strong>当前能力边界</strong>
-          <p>多轮记忆、Tool Calling 与流式输出尚未接入。</p>
-        </div>
-      </aside>
+        </aside>
+      </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.workbench {
-  display: flex;
-  flex-direction: column;
-  height: calc(100vh - 58px);
-  min-height: 610px;
+.home-page {
+  position: relative;
+  min-height: calc(100vh - 68px);
+  overflow: hidden;
+  padding: 64px 32px 72px;
+  background: #f7f9f5;
 }
 
-.page-toolbar {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  min-height: 86px;
-  padding: 16px 24px 14px;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
+.home-container {
+  position: relative;
+  z-index: 2;
+  width: min(100%, 1180px);
+  margin: 0 auto;
 }
 
-.breadcrumb {
-  margin-bottom: 6px;
-  color: #757a75;
-  font-size: 11px;
+.hero-copy {
+  position: relative;
+  margin-bottom: 38px;
+  text-align: center;
 }
 
-.breadcrumb span {
-  color: #9a9f99;
-}
-
-.breadcrumb b {
-  margin: 0 7px;
-  color: #c0c3bd;
-  font-weight: 400;
-}
-
-.page-toolbar h1 {
+.hero-copy h1 {
   margin: 0;
-  color: var(--color-text);
-  font-size: 20px;
-  font-weight: 650;
-  letter-spacing: -0.025em;
+  color: #202420;
+  font-size: clamp(33px, 3vw, 44px);
+  font-weight: 520;
+  letter-spacing: -0.045em;
+  line-height: 1.2;
 }
 
-.toolbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 14px;
+.hero-copy > p:not(.handwritten) {
+  margin: 14px 0 0;
+  color: #697069;
+  font-size: 16px;
 }
 
-.mode-note {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: #666b66;
-  font-size: 11px;
+.handwritten {
+  position: absolute;
+  top: 44px;
+  left: -76px;
+  margin: 0;
+  color: #83977e;
+  font-family: 'STKaiti', 'KaiTi', serif;
+  font-size: 18px;
+  line-height: 1.7;
+  text-align: left;
+  transform: rotate(-7deg);
 }
 
-.mode-note i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--color-amber);
-}
-
-.secondary-button {
-  display: inline-grid;
-  align-items: center;
-  height: 32px;
-  padding: 0 12px;
-  border: 1px solid #c7cac3;
-  border-radius: 3px;
-  background: transparent;
-  color: #404640;
-  font-size: 11px;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.secondary-button:hover {
-  border-color: #959b94;
-  background: #f1f2ee;
-}
-
-.runtime-bar {
-  display: flex;
-  align-items: stretch;
-  min-height: 58px;
-  border-bottom: 1px solid var(--color-border);
-  background: #f4f5f1;
-}
-
-.agent-selector {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 320px;
-  padding: 0 20px 0 24px;
-  border-right: 1px solid var(--color-border);
-}
-
-.agent-selector label,
-.runtime-fact span {
-  color: #898e88;
-  font-size: 10px;
-}
-
-.agent-selector select {
-  flex: 1;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: #272c27;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.runtime-fact {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 4px;
-  min-width: 150px;
-  padding: 0 18px;
-  border-right: 1px solid var(--color-border);
-  color: #454b45;
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-
-.session-fact {
-  min-width: 170px;
-}
-
-.more-button {
-  width: 48px;
-  margin-left: auto;
-  border: 0;
-  background: transparent;
-  color: #777d77;
-  cursor: pointer;
-}
-
-.more-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
+.handwritten::after {
+  display: block;
+  width: 72px;
+  height: 1px;
+  margin: 4px 0 0 16px;
+  background: #8ba087;
+  content: '';
+  transform: rotate(-10deg);
 }
 
 .workspace-grid {
   display: grid;
-  flex: 1;
-  grid-template-columns: minmax(520px, 1fr) 292px;
-  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 24px;
+  align-items: start;
 }
 
-.conversation-panel {
-  display: flex;
+.task-area {
   min-width: 0;
-  min-height: 0;
-  flex-direction: column;
-  background: var(--color-surface);
 }
 
-.message-list {
-  flex: 1;
-  min-height: 0;
-  padding: 28px clamp(24px, 5vw, 72px) 20px;
-  overflow-y: auto;
-}
-
-.conversation-intro {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  max-width: 760px;
-  margin: 0 auto 28px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid #e0e2dc;
-}
-
-.agent-emblem {
-  display: grid;
-  width: 38px;
-  height: 38px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 3px 9px 3px 9px;
-  background: #203c93;
-  color: #ffffff;
-  font-family: var(--font-mono);
-  font-weight: 700;
-}
-
-.conversation-intro h2 {
-  margin: 0 0 4px;
-  color: #252a25;
-  font-size: 14px;
-}
-
-.conversation-intro p {
-  margin: 0;
-  color: #777c76;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.message-row {
-  display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
-  gap: 12px;
-  max-width: 760px;
-  margin: 0 auto 24px;
-}
-
-.message-author {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border: 1px solid #c9ccc6;
-  border-radius: 3px;
-  background: #f1f2ee;
-  color: #5c625c;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.message-assistant .message-author {
-  border-color: #b9c4e4;
-  background: #e7ebf7;
-  color: #24449c;
-}
-
-.message-body {
-  position: relative;
-  min-width: 0;
-  padding-top: 2px;
-}
-
-.message-label {
-  margin-bottom: 7px;
-  color: #343934;
-  font-size: 11px;
-  font-weight: 650;
-}
-
-.message-label span {
-  margin-left: 8px;
-  color: #9a9e99;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: 400;
-}
-
-.message-body p {
-  max-width: 70ch;
-  margin: 0;
-  color: #444a44;
-  font-size: 13px;
-  line-height: 1.8;
-  white-space: pre-wrap;
-}
-
-.message-user .message-body p {
-  display: inline-block;
-  padding: 10px 12px;
-  border: 1px solid #dde0da;
-  border-radius: 3px;
-  background: #f4f5f1;
-}
-
-.copy-action {
-  margin-top: 10px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: #838882;
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.copy-action:hover {
-  color: var(--color-blue);
-}
-
-.pending-message span {
-  display: inline-block;
-  width: 5px;
-  height: 5px;
-  margin: 5px 3px 0 0;
-  border-radius: 50%;
-  background: #8190bd;
-  animation: thinking 1.1s infinite ease-in-out;
-}
-
-.pending-message span:nth-child(3) { animation-delay: 0.14s; }
-.pending-message span:nth-child(4) { animation-delay: 0.28s; }
-
-.composer-area {
-  position: relative;
-  z-index: 2;
-  padding: 10px clamp(24px, 5vw, 72px) 14px;
-  border-top: 1px solid var(--color-border);
-  background: #f6f7f3;
-}
-
-.suggestions,
-.composer,
-.composer-note,
-.request-error {
-  max-width: 760px;
-  margin-right: auto;
-  margin-left: auto;
-}
-
-.suggestions {
-  display: flex;
-  gap: 7px;
-  margin-bottom: 8px;
-}
-
-.suggestions button {
-  padding: 5px 9px;
-  border: 1px solid #d3d6cf;
-  border-radius: 3px;
-  background: transparent;
-  color: #6d726d;
-  font-size: 10px;
-  cursor: pointer;
-}
-
-.suggestions button:hover {
-  border-color: #aeb5c7;
-  color: #294ba4;
-}
-
-.composer {
-  border: 1px solid #bfc3bc;
-  border-radius: 4px;
+.task-composer {
+  overflow: hidden;
+  border: 1px solid #cfd6cf;
+  border-radius: 10px;
   background: #ffffff;
-  box-shadow: 0 3px 12px rgba(36, 42, 36, 0.05);
+  box-shadow: 0 14px 34px rgba(56, 71, 55, 0.06);
 }
 
-.composer:focus-within {
-  border-color: #6680c8;
-  box-shadow: 0 0 0 2px rgba(47, 91, 234, 0.1);
+.task-composer:focus-within {
+  border-color: #879d83;
+  box-shadow: 0 0 0 3px rgba(111, 130, 107, 0.1), 0 14px 34px rgba(56, 71, 55, 0.07);
 }
 
-.composer textarea {
+.task-composer textarea {
   display: block;
   width: 100%;
-  min-height: 68px;
-  padding: 12px 13px 4px;
+  min-height: 230px;
+  padding: 26px 27px 14px;
   resize: none;
   border: 0;
   outline: 0;
   background: transparent;
-  color: #292e29;
+  color: #232823;
   font: inherit;
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: 17px;
+  line-height: 1.65;
 }
 
-.composer textarea::placeholder {
-  color: #9da19c;
+.task-composer textarea::placeholder {
+  color: #a1a7a2;
 }
 
-.composer-footer {
+.attachment-list {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 24px 12px;
+}
+
+.attachment-list span {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  min-height: 38px;
-  padding: 5px 7px 7px 12px;
-  color: #a0a49e;
-  font-size: 9px;
-}
-
-.composer-footer > div {
-  display: flex;
-  gap: 6px;
-}
-
-.attachment-button {
-  width: 30px;
-  height: 30px;
-  border: 1px solid #d6d9d2;
-  border-radius: 3px;
-  background: transparent;
-  color: #a2a6a0;
-}
-
-.send-button {
-  height: 30px;
-  padding: 0 10px 0 12px;
-  border: 0;
-  border-radius: 3px;
-  background: var(--color-blue);
-  color: #ffffff;
-  font-size: 10px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.send-button span {
-  margin-left: 9px;
-  opacity: 0.7;
-}
-
-.send-button:disabled {
-  background: #aeb7ce;
-  cursor: not-allowed;
-}
-
-.composer-note {
-  margin-top: 6px;
-  margin-bottom: 0;
-  color: #9a9e99;
-  font-size: 9px;
-  text-align: center;
-}
-
-.request-error {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 9px;
-  align-items: center;
-  margin-bottom: 8px;
-  padding: 8px 10px;
-  border-left: 3px solid #b94e46;
-  background: #f5e9e7;
-  color: #7b3934;
-  font-size: 10px;
-}
-
-.request-error button {
-  border: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-}
-
-.inspector-panel {
-  min-width: 0;
-  overflow-y: auto;
-  border-left: 1px solid var(--color-border);
-  background: #eef0eb;
-}
-
-.inspector-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  padding: 20px 18px 16px;
-  border-bottom: 1px solid #d8dad4;
-}
-
-.inspector-heading h2,
-.section-title h3 {
-  margin: 0;
-  color: #343934;
-  font-size: 12px;
-}
-
-.inspector-heading p {
-  margin: 4px 0 0;
-  color: #929791;
-  font-size: 9px;
-}
-
-.success-state {
-  padding: 3px 7px;
-  border: 1px solid #9fc1ae;
-  border-radius: 2px;
-  background: #e4eee8;
-  color: #276746;
-  font-size: 9px;
-}
-
-.execution-meta {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  margin: 0;
-  border-bottom: 1px solid #d8dad4;
-}
-
-.execution-meta div {
-  min-width: 0;
-  padding: 12px 16px;
-  border-right: 1px solid #d8dad4;
-  border-bottom: 1px solid #d8dad4;
-}
-
-.execution-meta div:nth-child(even) { border-right: 0; }
-.execution-meta div:nth-last-child(-n + 2) { border-bottom: 0; }
-
-.execution-meta dt {
-  margin-bottom: 5px;
-  color: #90958f;
-  font-size: 9px;
-}
-
-.execution-meta dd {
-  margin: 0;
+  gap: 7px;
+  max-width: 280px;
+  padding: 7px 9px;
   overflow: hidden;
-  color: #464c46;
-  font-family: var(--font-mono);
-  font-size: 9px;
+  border: 1px solid #dce3da;
+  border-radius: 6px;
+  background: #f5f8f3;
+  color: #566354;
+  font-size: 13px;
+}
+
+.attachment-list svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.attachment-list b {
+  overflow: hidden;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.trace-section,
-.payload-section {
-  padding: 18px;
-  border-bottom: 1px solid #d8dad4;
+.attachment-list button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #7d887b;
+  cursor: pointer;
 }
 
-.section-title {
+.composer-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 15px;
+  min-height: 70px;
+  padding: 9px 15px 13px 22px;
 }
 
-.section-title span,
-.section-title button {
+.input-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.input-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #343b36;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.input-actions button:hover {
+  background: var(--color-sage-pale);
+  color: #496347;
+}
+
+.input-actions svg,
+.start-button svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.start-button {
+  display: inline-flex;
+  min-width: 116px;
+  height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--color-sage-strong);
+  color: #ffffff;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 5px 12px rgba(73, 100, 71, 0.14);
+}
+
+.start-button:hover:not(:disabled) {
+  background: #526e50;
+  transform: translateY(-1px);
+}
+
+.start-button:disabled {
+  background: #a7b4a4;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.loading-mark {
+  width: 17px;
+  height: 17px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.notice {
+  min-height: 22px;
+  margin: 10px 3px 0;
+  color: #627360;
+  font-size: 13px;
+}
+
+.recent-panel {
+  overflow: hidden;
+  border: 1px solid #dce1dc;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 21px 20px 17px;
+  border-bottom: 1px solid #e8ebe7;
+}
+
+.panel-heading h2 {
+  margin: 0;
+  color: #232723;
+  font-size: 18px;
+  font-weight: 620;
+}
+
+.panel-heading p {
+  margin: 6px 0 0;
+  color: #8a918a;
+  font-size: 12px;
+}
+
+.panel-heading button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
   border: 0;
   background: transparent;
-  color: #8a8f89;
-  font-size: 9px;
+  color: var(--color-sage-strong);
+  font-size: 13px;
+  cursor: pointer;
 }
 
-.trace-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
+.panel-heading button span {
+  font-size: 19px;
+  line-height: 0.8;
 }
 
-.trace-list li {
-  position: relative;
+.task-list {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
-  gap: 9px;
-  align-items: start;
-  min-height: 54px;
 }
 
-.trace-list li:not(:last-child)::after {
+.task-row {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 31px minmax(0, 1fr) 17px;
+  gap: 12px;
+  align-items: center;
+  min-height: 82px;
+  padding: 13px 17px;
+  border: 0;
+  border-bottom: 1px solid #e8ebe7;
+  background: transparent;
+  color: #252a25;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-row:last-child {
+  border-bottom: 0;
+}
+
+.task-row:hover {
+  background: #f2f6ef;
+}
+
+.task-kind {
+  display: grid;
+  place-items: center;
+}
+
+.task-kind svg {
+  width: 25px;
+  height: 25px;
+  fill: none;
+  stroke: var(--color-sage-strong);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.task-copy {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.task-copy strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-copy small {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #858c85;
+  font-size: 12px;
+}
+
+.task-copy i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4f864a;
+}
+
+.task-copy i.processing {
+  background: #c58e37;
+}
+
+.row-arrow {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: #7c867e;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.botanical {
   position: absolute;
-  top: 21px;
-  bottom: -1px;
-  left: 10px;
-  width: 1px;
-  background: #a9b7de;
+  z-index: 1;
+  width: 210px;
+  height: 310px;
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.botanical::before {
+  position: absolute;
+  width: 2px;
+  height: 280px;
+  border-radius: 50%;
+  background: #9eb39a;
   content: '';
 }
 
-.trace-node {
-  display: grid;
-  width: 21px;
-  height: 21px;
-  place-items: center;
-  border: 1px solid #8ea2da;
-  border-radius: 50%;
-  background: #eef0eb;
-  color: #2e54bb;
-  font-family: var(--font-mono);
-  font-size: 8px;
-}
-
-.trace-list strong,
-.trace-list small {
+.botanical i {
+  position: absolute;
   display: block;
+  width: 98px;
+  height: 45px;
+  border-radius: 100% 0 100% 0;
+  background: #d9e4d5;
+  transform-origin: bottom right;
 }
 
-.trace-list strong {
-  margin-top: 2px;
-  color: #4a504a;
-  font-size: 10px;
-  font-weight: 600;
+.botanical-left { bottom: 12px; left: -44px; transform: rotate(-9deg); }
+.botanical-left::before { bottom: -32px; left: 83px; transform: rotate(19deg); }
+.botanical-left i:nth-child(1) { top: 34px; left: 88px; transform: rotate(34deg) scale(0.9); }
+.botanical-left i:nth-child(2) { top: 92px; left: 21px; transform: rotate(205deg) scale(1.05); }
+.botanical-left i:nth-child(3) { top: 137px; left: 96px; transform: rotate(23deg) scale(0.88); }
+.botanical-left i:nth-child(4) { top: 193px; left: 18px; transform: rotate(203deg) scale(1.15); }
+.botanical-left i:nth-child(5) { top: 235px; left: 92px; transform: rotate(21deg) scale(0.8); }
+.botanical-right { top: 110px; right: -74px; transform: rotate(9deg) scale(0.76); }
+.botanical-right::before { top: 20px; right: 83px; transform: rotate(-14deg); }
+.botanical-right i:nth-child(1) { top: 12px; left: 11px; transform: rotate(202deg) scale(0.8); }
+.botanical-right i:nth-child(2) { top: 57px; left: 91px; transform: rotate(20deg); }
+.botanical-right i:nth-child(3) { top: 108px; left: 8px; transform: rotate(203deg) scale(1.05); }
+.botanical-right i:nth-child(4) { top: 157px; left: 94px; transform: rotate(18deg) scale(0.92); }
+.botanical-right i:nth-child(5) { top: 202px; left: 11px; transform: rotate(203deg); }
+.botanical-right i:nth-child(6) { top: 246px; left: 89px; transform: rotate(20deg) scale(0.84); }
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.trace-list small {
-  margin-top: 4px;
-  color: #969a95;
-  font-family: var(--font-mono);
-  font-size: 8px;
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
-.trace-list time {
-  margin-top: 4px;
-  color: #8a8f89;
-  font-family: var(--font-mono);
-  font-size: 8px;
+@media (max-width: 1180px) {
+  .handwritten,
+  .botanical {
+    display: none;
+  }
 }
 
-.payload-section pre {
-  margin: 0;
-  padding: 10px;
-  border: 1px solid #d8dad4;
-  border-radius: 2px;
-  background: #e7e9e4;
-  color: #606660;
-  font-family: var(--font-mono);
-  font-size: 9px;
-}
+@media (max-width: 900px) {
+  .home-page {
+    padding-top: 44px;
+  }
 
-.limitation-note {
-  margin: 16px;
-  padding: 12px;
-  border-left: 2px solid var(--color-amber);
-  background: #f2eee3;
-}
+  .workspace-grid {
+    grid-template-columns: 1fr;
+  }
 
-.limitation-note strong {
-  color: #625633;
-  font-size: 10px;
-}
-
-.limitation-note p {
-  margin: 5px 0 0;
-  color: #81775a;
-  font-size: 9px;
-  line-height: 1.6;
-}
-
-@keyframes thinking {
-  0%, 70%, 100% { transform: translateY(0); opacity: 0.45; }
-  35% { transform: translateY(-3px); opacity: 1; }
-}
-
-@media (max-width: 1100px) {
-  .workspace-grid { grid-template-columns: minmax(500px, 1fr) 260px; }
-  .runtime-fact { display: none; }
-}
-
-@media (max-width: 880px) {
-  .workspace-grid { display: block; overflow-y: auto; }
-  .conversation-panel { min-height: calc(100vh - 202px); }
-  .inspector-panel { border-top: 1px solid var(--color-border); border-left: 0; }
-  .message-list { min-height: 310px; }
+  .task-composer textarea {
+    min-height: 180px;
+  }
 }
 
 @media (max-width: 620px) {
-  .page-toolbar { padding-inline: 16px; }
-  .secondary-button { display: none; }
-  .runtime-bar { min-height: 54px; }
-  .agent-selector { min-width: 0; width: calc(100% - 48px); padding-inline: 16px; }
-  .message-list, .composer-area { padding-inline: 16px; }
-  .suggestions { overflow-x: auto; }
-  .suggestions button { flex: 0 0 auto; }
+  .home-page {
+    padding: 34px 16px 48px;
+  }
+
+  .hero-copy {
+    margin-bottom: 25px;
+    text-align: left;
+  }
+
+  .hero-copy h1 {
+    font-size: 30px;
+    font-weight: 500;
+  }
+
+  .hero-copy > p:not(.handwritten) {
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  .task-composer textarea {
+    min-height: 145px;
+    padding: 20px 18px 8px;
+    font-size: 16px;
+  }
+
+  .composer-actions {
+    align-items: flex-end;
+    padding: 8px 10px 10px 12px;
+  }
+
+  .input-actions {
+    gap: 1px;
+  }
+
+  .input-actions button {
+    width: 42px;
+    justify-content: center;
+    padding: 9px;
+    font-size: 0;
+  }
+
+  .start-button {
+    min-width: 96px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pending-message span { animation: none; }
-  * { scroll-behavior: auto !important; }
+  .loading-mark { animation: none; }
 }
 </style>
